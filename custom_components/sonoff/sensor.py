@@ -26,7 +26,7 @@ from homeassistant.util import dt
 
 from .core.const import DOMAIN
 from .core.entity import XEntity
-from .core.ewelink import SIGNAL_ADD_ENTITIES, XRegistry
+from .core.ewelink import SIGNAL_ADD_ENTITIES, SIGNAL_BUTTON_EVENT, XRegistry
 
 PARALLEL_UPDATES = 0  # fix entity_platform parallel_updates Semaphore
 
@@ -420,9 +420,13 @@ class XEventSesor(XEntity, SensorEntity):
 
 
 class XButtonBase(XEventSesor):
-    def set_state(self, params: dict):
+    @staticmethod
+    def decode_action(params: dict) -> tuple[int | None, str]:
         button = params.get("outlet")
-        key = BUTTON_STATES[params["key"]]
+        return button, BUTTON_STATES[params["key"]]
+
+    def set_state(self, params: dict):
+        button, key = self.decode_action(params)
         self._attr_native_value = (
             f"button_{button + 1}_{key}" if button is not None else key
         )
@@ -463,7 +467,12 @@ class XButtonLocalKey(XButtonBase):
         # MINI-2GS https://github.com/AlexxIT/SonoffLAN/issues/1694
         # MINI-ZB2GS-L https://github.com/AlexxIT/SonoffLAN/issues/1701
         if len(params) == 1:
-            XButtonBase.set_state(self, params["localKeyPass"])
+            payload = params["localKeyPass"]
+            button, action = self.decode_action(payload)
+            self.ewelink.dispatcher_send(
+                SIGNAL_BUTTON_EVENT, self.device["deviceid"], button, action
+            )
+            XButtonBase.set_state(self, payload)
 
 
 class XT5Action(XEventSesor):

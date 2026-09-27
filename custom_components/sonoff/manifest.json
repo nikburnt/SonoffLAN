@@ -2,16 +2,17 @@
   "domain": "sonoff",
   "name": "Sonoff",
   "codeowners": [
-    "@AlexxIT"
+    "@AlexxIT",
+    "@nikburnt"
   ],
   "config_flow": true,
   "dependencies": [
     "http",
     "zeroconf"
   ],
-  "documentation": "https://github.com/AlexxIT/SonoffLAN",
+  "documentation": "https://github.com/nikburnt/SonoffLAN",
   "iot_class": "local_push",
-  "issue_tracker": "https://github.com/AlexxIT/SonoffLAN/issues",
+  "issue_tracker": "https://github.com/nikburnt/SonoffLAN/issues",
   "requirements": [],
-  "version": "3.13.1"
+  "version": "3.13.1.1"
 }

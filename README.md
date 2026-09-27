@@ -1,6 +1,39 @@
 # Control Sonoff Devices from Home Assistant
 
-[![hacs_badge](https://img.shields.io/badge/HACS-Default-orange.svg)](https://github.com/hacs/integration)
+[![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
+
+## Managed Buttons Fork
+
+This fork of [AlexxIT/SonoffLAN](https://github.com/AlexxIT/SonoffLAN) packages
+independent SwitchMan M5 button event entities as part of each release. It keeps
+the `sonoff` integration domain and existing entity unique IDs, including
+`<deviceid>_button_<number>`, so installations using the earlier local button
+patch can retain their entity registry entries and automation references.
+
+Add `https://github.com/nikburnt/SonoffLAN` to HACS custom repositories as an
+Integration and install **Sonoff LAN (Managed Buttons)**. Use only one HACS
+repository to manage `custom_components/sonoff`: uninstall the upstream HACS
+download before installing this fork, but do not delete the SONOFF integration
+or its devices from Home Assistant. Back up the configuration first. Restart
+Home Assistant only after the fork is installed, at a time when automations may
+safely resume. A download alone does not activate the new Python code.
+
+Do not use HACS to reinstall the original repository over this fork: upstream
+releases do not include these event entities. Future upstream updates must be
+merged into this fork, tested, and published as a new fork release. Fork versions
+append a revision to the upstream version, for example `3.13.1.1`.
+
+**Current limitation:** button events follow upstream 3.13.1's cloud-only action
+recognition. LAN state reports can repeat a previous button action after a relay
+command, so they are deliberately ignored. Relay control can still use LAN in
+auto mode, but detached-button automations require the eWeLink cloud and can
+inherit its latency. This release prevents update-related loss of the button
+platform; it does not solve cloud latency or promise offline button operation.
+
+Regression tests cover stable IDs, independent channels, fast repeated presses,
+and rejection of cached startup and relay-feedback actions. CI runs the full
+suite on Home Assistant 2026.8.1 and 2026.9.3. A real button press through the
+consumer automation remains a separate deployment check.
 
 Home Assistant custom component for control [Sonoff](https://www.itead.cc/) devices with [eWeLink](https://www.ewelink.cc/en/) (original) firmware over LAN and/or Cloud.
 
@@ -233,6 +266,19 @@ If you want some additional device attributes as sensors:
 sonoff:
   sensors: [staMac, bssid, host]
 ```
+
+### SwitchMan M5 button events
+
+SwitchMan M5 devices expose a separate `event` entity for each physical button.
+Actions accepted by the existing action sensor are routed to the matching
+button entity, so actions on different buttons do not suppress each other. The
+existing action sensor remains available for backward compatibility.
+LAN action reports are excluded, following upstream 3.13.1, because they can
+retain the previous button action after an unrelated relay update.
+
+Button actions use Home Assistant event types: `press_end`, `long_press_end`,
+and `multi_press_end`. Multi-press events include the `multi_press_count`
+attribute.
 
 ### Force update
 
