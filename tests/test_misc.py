@@ -1,5 +1,6 @@
 import asyncio
 import json
+from unittest.mock import AsyncMock
 
 from custom_components.sonoff.core.devices import spec
 from custom_components.sonoff.core.ewelink import (
@@ -11,6 +12,7 @@ from custom_components.sonoff.core.ewelink import (
 from custom_components.sonoff.core.ewelink.local import decrypt, encrypt
 from custom_components.sonoff.fan import XFan
 from custom_components.sonoff.light import XLightL1
+
 from . import DEVICEID, save_to
 
 
@@ -19,15 +21,20 @@ def test_bulk():
 
     device = XDevice()
     loop = asyncio.new_event_loop()
+    calls = []
     # noinspection PyTypeChecker
     registry: XRegistry = XRegistry(None)
-    registry.send = save_to(registry_send)
+    registry.send = AsyncMock(side_effect=save_to(registry_send))
 
-    loop.create_task(
-        registry.send_bulk(device, {"switches": [{"outlet": 1, "switch": "off"}]})
+    calls.append(
+        loop.create_task(
+            registry.send_bulk(device, {"switches": [{"outlet": 1, "switch": "off"}]})
+        )
     )
-    loop.create_task(
-        registry.send_bulk(device, {"switches": [{"outlet": 2, "switch": "off"}]})
+    calls.append(
+        loop.create_task(
+            registry.send_bulk(device, {"switches": [{"outlet": 2, "switch": "off"}]})
+        )
     )
     loop.run_until_complete(asyncio.sleep(0))
     assert device["params_bulk"]["switches"] == [
@@ -35,11 +42,15 @@ def test_bulk():
         {"outlet": 2, "switch": "off"},
     ]
 
-    loop.create_task(
-        registry.send_bulk(device, {"switches": [{"outlet": 2, "switch": "off"}]})
+    calls.append(
+        loop.create_task(
+            registry.send_bulk(device, {"switches": [{"outlet": 2, "switch": "off"}]})
+        )
     )
-    loop.create_task(
-        registry.send_bulk(device, {"switches": [{"outlet": 1, "switch": "on"}]})
+    calls.append(
+        loop.create_task(
+            registry.send_bulk(device, {"switches": [{"outlet": 1, "switch": "on"}]})
+        )
     )
 
     loop.run_until_complete(asyncio.sleep(0.1))
@@ -47,6 +58,7 @@ def test_bulk():
         "switches": [{"outlet": 1, "switch": "on"}, {"outlet": 2, "switch": "off"}]
     }
 
+    loop.run_until_complete(asyncio.gather(*calls))
     loop.close()
 
 

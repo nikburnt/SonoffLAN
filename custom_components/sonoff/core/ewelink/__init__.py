@@ -24,6 +24,8 @@ class XRegistry(XRegistryBase):
 
         self.devices: dict[str, XDevice] = {}
         self._switches_received_at: dict[str, dict[int, float]] = {}
+        self._bulk_tasks: dict[int, asyncio.Task] = {}
+        self._bulk_sends: set[asyncio.Task] = set()
 
         self.cloud = XRegistryCloud(session)
         self.cloud.dispatcher_connect(SIGNAL_CONNECTED, self.cloud_connected)
@@ -80,6 +82,12 @@ class XRegistry(XRegistryBase):
         return self.cloud.online is not None or self.local.online
 
     async def stop(self, *args):
+        pending = tuple(self._bulk_sends)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        self._bulk_tasks.clear()
+        self._bulk_sends.clear()
         self.devices.clear()
         self._switches_received_at.clear()
         self.dispatcher.clear()
@@ -169,12 +177,27 @@ class XRegistry(XRegistryBase):
         else:
             device["params_bulk"] = params
 
-        await asyncio.sleep(0.1)
+        key = id(device)
+        if (task := self._bulk_tasks.get(key)) is None:
+            task = asyncio.ensure_future(self._send_bulk(device))
+            self._bulk_tasks[key] = task
+            self._bulk_sends.add(task)
+            task.add_done_callback(self._bulk_sends.discard)
+        # Every merged caller waits for the same send; one cancellation cannot
+        # abort the command shared with another relay channel.
+        return await asyncio.shield(task)
 
-        # this can be called from different threads/loops
-        # https://github.com/AlexxIT/SonoffLAN/issues/1368
-        if params := device.pop("params_bulk", None):
-            return await self.send(device, params)
+    async def _send_bulk(self, device: XDevice):
+        key = id(device)
+        try:
+            await asyncio.sleep(0.1)
+            self._bulk_tasks.pop(key, None)
+            if params := device.pop("params_bulk", None):
+                return await self.send(device, params)
+        finally:
+            if self._bulk_tasks.get(key) is asyncio.current_task():
+                self._bulk_tasks.pop(key, None)
+                device.pop("params_bulk", None)
 
     # TODO: Unify send_bulk and send_bulk_configure
     async def send_bulk_configure(self, device: XDevice, params: dict):
