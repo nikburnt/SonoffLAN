@@ -17,7 +17,7 @@ import aiohttp
 from aiohttp.hdrs import CONTENT_TYPE
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from zeroconf import ServiceStateChange, Zeroconf
+from zeroconf import DNSText, ServiceStateChange, Zeroconf
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo
 
 from .base import SIGNAL_CONNECTED, SIGNAL_UPDATE, XDevice, XRegistryBase
@@ -61,6 +61,10 @@ class XRegistryLocal(XRegistryBase):
     browser: AsyncServiceBrowser = None
     online: bool = False
 
+    def __init__(self, session: aiohttp.ClientSession):
+        super().__init__(session)
+        self._txt_received_at: dict[str, dict[bytes, float]] = {}
+
     def start(self, zeroconf: Zeroconf):
         self.browser = AsyncServiceBrowser(
             zeroconf, "_ewelink._tcp.local.", [self._handler1]
@@ -73,6 +77,7 @@ class XRegistryLocal(XRegistryBase):
             return
         self.online = False
         await self.browser.async_cancel()
+        self._txt_received_at.clear()
 
     def _handler1(
         self,
@@ -83,12 +88,14 @@ class XRegistryLocal(XRegistryBase):
     ):
         """Step 1. Receive change event from zeroconf."""
         if state_change == ServiceStateChange.Removed:
+            self._txt_received_at.pop(name.lower(), None)
             return
         # accept: eWeLink_1000xxxxxx and eWelink_1000xxxxxx (from uiid 104)
         # skip: ihost-1001xxxxxx, zbbridgeu-100xxxxxxx, zbbridgeu-100xxxxxxx-wlan0
         if not name.lower().startswith("ewelink"):
             return
 
+        self._received_at(zeroconf, name)
         asyncio.create_task(self._handler2(zeroconf, service_type, name))
 
     async def _handler2(self, zeroconf: Zeroconf, service_type: str, name: str):
@@ -117,12 +124,30 @@ class XRegistryLocal(XRegistryBase):
                 for k, v in info.properties.items()
             }
 
-            self._handler3(deviceid, host, data)
+            self._handler3(
+                deviceid, host, data, self._received_at(zeroconf, name, info.text)
+            )
 
         except Exception as e:
             _LOGGER.debug(f"{deviceid} <= Local0 | Zeroconf error", exc_info=e)
 
-    def _handler3(self, deviceid: str, host: str, data: dict):
+    def _received_at(self, zeroconf: Zeroconf, name: str, text: bytes | None = None):
+        """Keep a TXT version's original receipt time across cached replays."""
+        versions = self._txt_received_at.setdefault(name.lower(), {})
+        for record in zeroconf.cache.async_entries_with_name(name):
+            if isinstance(record, DNSText):
+                key = hashlib.sha256(record.text).digest()
+                versions.setdefault(key, record.created / 1000)
+                # Bound history while retaining recently reordered announcements.
+                if len(versions) > 32:
+                    versions.pop(next(iter(versions)))
+        if text is not None:
+            return versions.get(hashlib.sha256(text).digest())
+        return None
+
+    def _handler3(
+        self, deviceid: str, host: str, data: dict, received_at: float | None = None
+    ):
         """Step 3. Process new data from device."""
 
         raw = "".join([data[f"data{i}"] for i in range(1, 5, 1) if f"data{i}" in data])
@@ -136,6 +161,8 @@ class XRegistryLocal(XRegistryBase):
 
         if host:
             msg["host"] = host
+        if received_at is not None:
+            msg["received_at"] = received_at
 
         if data.get("encrypt") == "true":
             msg["data"] = raw

@@ -23,6 +23,7 @@ class XRegistry(XRegistryBase):
         super().__init__(session)
 
         self.devices: dict[str, XDevice] = {}
+        self._switches_received_at: dict[str, dict[int, float]] = {}
 
         self.cloud = XRegistryCloud(session)
         self.cloud.dispatcher_connect(SIGNAL_CONNECTED, self.cloud_connected)
@@ -80,6 +81,7 @@ class XRegistry(XRegistryBase):
 
     async def stop(self, *args):
         self.devices.clear()
+        self._switches_received_at.clear()
         self.dispatcher.clear()
 
         await self.cloud.stop()
@@ -223,7 +225,9 @@ class XRegistry(XRegistryBase):
         if not device or "online" not in device:
             return
 
-        params = msg["params"]
+        params = self._filter_switches(did, msg["params"], time.monotonic())
+        if "switches" in params:
+            self._update_device_params(device, {"switches": params["switches"]})
         device["cloud_seq"] = seq = msg.get("sequence")
 
         _LOGGER.debug(f"{did} <= Cloud3 | %s | {seq}", params)
@@ -293,10 +297,10 @@ class XRegistry(XRegistryBase):
 
         _LOGGER.debug(f"{realid} <= {tag} | {host} | %s | {seq}", params)
 
-        if "params" in device:
-            device["params"].update(params)
-        else:
-            device["params"] = params
+        params = self._filter_switches(
+            realid, params, msg.get("received_at", time.monotonic())
+        )
+        self._update_device_params(device, params)
 
         # we can get data from device, but without host
         if "host" in msg and device.get("host") != msg["host"]:
@@ -315,6 +319,40 @@ class XRegistry(XRegistryBase):
         # send empty msg to main device for updating available flag
         if realid != mainid:
             self.dispatcher_send(mainid, None)
+
+    def _filter_switches(self, deviceid: str, params: dict, received_at: float):
+        """Reject only channels older than an already accepted state report."""
+        if "switches" not in params:
+            return params
+        latest = self._switches_received_at.setdefault(deviceid, {})
+        switches = []
+        for channel in params["switches"]:
+            outlet = channel["outlet"]
+            if received_at < latest.get(outlet, float("-inf")):
+                _LOGGER.debug(
+                    "%s !! Ignoring older LAN state for outlet %s (%.3f < %.3f)",
+                    deviceid,
+                    outlet,
+                    received_at,
+                    latest[outlet],
+                )
+                continue
+            latest[outlet] = received_at
+            switches.append(channel)
+        if len(switches) == len(params["switches"]):
+            return params
+        # Keep the snapshot marker: localKeyPass alone would look like a press.
+        return {**params, "switches": switches}
+
+    @staticmethod
+    def _update_device_params(device: XDevice, params: dict):
+        """Merge partial relay reports without erasing independent channels."""
+        cached = device.setdefault("params", {})
+        if "switches" in params and "switches" in cached:
+            switches = {item["outlet"]: item for item in cached["switches"]}
+            switches.update({item["outlet"]: item for item in params["switches"]})
+            params = {**params, "switches": list(switches.values())}
+        cached.update(params)
 
     async def run_forever(self):
         while True:
