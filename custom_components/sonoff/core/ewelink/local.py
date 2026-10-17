@@ -179,14 +179,29 @@ class XRegistryLocal(XRegistryBase):
 
         log = f"{device['deviceid']} => Local4 | {host} | {command} {params or {}}"
 
-        try:
+        async def request():
+            # The deadline below covers both headers and the complete body.
             # noinspection HttpUrlsUsage
             r = await self.session.post(
                 f"http://{host}/zeroconf/{command}",
                 json=payload,
                 headers={"Connection": "close"},
-                timeout=timeout,
+                timeout=None,
             )
+            try:
+                await r.read()
+                return r
+            finally:
+                r.release()
+
+        task = asyncio.create_task(request())
+        try:
+            # A ready response must finish before an overdue timer cancels it.
+            # wait() observes completion without cancelling the HTTP coroutine.
+            done, _ = await asyncio.wait([task], timeout=timeout or None)
+            if not done:
+                raise asyncio.TimeoutError
+            r = task.result()
 
             try:
                 # some devices don't support getState command
@@ -263,6 +278,10 @@ class XRegistryLocal(XRegistryBase):
         except Exception as e:
             _LOGGER.error(log, exc_info=e)
             return "E#???"
+
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     @staticmethod
     def decrypt_msg(msg: dict, devicekey: str = None) -> dict:
