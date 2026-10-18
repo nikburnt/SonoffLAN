@@ -35,6 +35,16 @@ and rejection of cached startup and relay-feedback actions. CI runs the full
 suite on Home Assistant 2026.8.1 and 2026.9.3. A real button press through the
 consumer automation remains a separate deployment check.
 
+### Verified M5 command state
+
+M5 switch entities expose `sonoff_command_confirmation` only after a successful
+transport and a report matching the current command sequence, channel and value.
+Each invocation has its own `command_id` and originating HA `context_id`; a new
+invocation clears old evidence immediately, including before its batch flushes.
+ACK alone, unversioned snapshots and superseded invocations never create proof.
+Reports arriving before ACK are retained until transport success. Existing
+button recognition and relay-report freshness rules are unchanged.
+
 ### M5 relay batching
 
 M5 relay channels (UIIDs 160/161/162) share a 25 ms command-coalescing window

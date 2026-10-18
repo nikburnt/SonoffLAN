@@ -13,6 +13,10 @@ class _Request:
     values: dict[int, str] = field(default_factory=dict)
     before: dict[int, int] = field(default_factory=dict)
     observed: set[int] = field(default_factory=set)
+    confirmations: dict[int, dict] = field(default_factory=dict)
+    reported: set[int] = field(default_factory=set)
+    emitted: set[int] = field(default_factory=set)
+    successful: bool = False
 
 
 class RelayReports:
@@ -25,7 +29,9 @@ class RelayReports:
         self._pending: dict[str, _Request] = {}
         self._reads: dict[str, _Request] = {}
 
-    def start(self, device: dict, sequence: str, params: dict | None):
+    def start(
+        self, device: dict, sequence: str, params: dict | None, confirmations=None
+    ):
         if device.get("extra", {}).get("uiid") not in (160, 161, 162):
             return None
         did = device["deviceid"]
@@ -37,6 +43,7 @@ class RelayReports:
         self._version += 1
         request = _Request(sequence, did, self._version, time.monotonic())
         if params:
+            request.confirmations = confirmations or {}
             request.values = {c["outlet"]: c["switch"] for c in params["switches"]}
             commands = self._commands.setdefault(did, {})
             for outlet in request.values:
@@ -62,6 +69,7 @@ class RelayReports:
             return []
         del self._pending[request.sequence]
         released = []
+        request.successful = success
         if success:
             for outlet, value in request.values.items():
                 states = self._confirmed.setdefault(request.deviceid, {})
@@ -88,6 +96,8 @@ class RelayReports:
             and (direct or value == reply.values[outlet])
         ):
             self._confirmed.setdefault(deviceid, {})[outlet] = (reply.version, value)
+            if value == reply.values[outlet]:
+                reply.reported.add(outlet)
             return True, True
         # Unversioned feedback is not published against an existing fence. If
         # it matches a pending write, that write's ACK can validate it later.
@@ -112,6 +122,31 @@ class RelayReports:
             self._confirmed[deviceid][outlet] = (read.version, value)
             return True, True
         return expected is None or value == expected, False
+
+    def confirmations(self, deviceid):
+        """Release each current invocation only after ACK and its exact report."""
+        result = []
+        for outlet, request in self._commands.get(deviceid, {}).items():
+            if (
+                not request.successful
+                or outlet not in request.reported
+                or outlet in request.emitted
+                or outlet not in request.confirmations
+                or self._confirmed.get(deviceid, {}).get(outlet)
+                != (request.version, request.values[outlet])
+            ):
+                continue
+            request.emitted.add(outlet)
+            result.append(
+                {
+                    **request.confirmations[outlet],
+                    "device_id": deviceid,
+                    "channel": outlet,
+                    "sequence": request.sequence,
+                    "state": request.values[outlet],
+                }
+            )
+        return result
 
     def clear(self):
         self._commands.clear()

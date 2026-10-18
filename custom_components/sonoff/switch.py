@@ -1,8 +1,15 @@
+from uuid import uuid4
+
 from homeassistant.components.switch import SwitchEntity
 
 from .core.const import DOMAIN
 from .core.entity import XEntity
-from .core.ewelink import SIGNAL_ADD_ENTITIES, XRegistry
+from .core.ewelink import (
+    SIGNAL_ADD_ENTITIES,
+    SIGNAL_COMMAND_CONFIRMED,
+    SIGNAL_COMMAND_STARTED,
+    XRegistry,
+)
 
 PARALLEL_UPDATES = 0  # fix entity_platform parallel_updates Semaphore
 
@@ -35,7 +42,13 @@ class XSwitches(XEntity, SwitchEntity):
     channel: int = 0
 
     def __init__(self, ewelink: XRegistry, device: dict):
+        self._command_id = None
         XEntity.__init__(self, ewelink, device)
+        if device.get("extra", {}).get("uiid") in (160, 161, 162):
+            ewelink.dispatcher_connect(
+                SIGNAL_COMMAND_CONFIRMED, self._command_confirmed
+            )
+            ewelink.dispatcher_connect(SIGNAL_COMMAND_STARTED, self._command_started)
 
         try:
             self._attr_name = device["tags"]["ck_channel_name"][str(self.channel)]
@@ -51,13 +64,55 @@ class XSwitches(XEntity, SwitchEntity):
         except StopIteration:
             pass
 
+    def _new_confirmation(self):
+        if self.device.get("extra", {}).get("uiid") not in (160, 161, 162):
+            return None
+        self._command_id = uuid4().hex
+        self._clear_confirmation()
+        context_id = getattr(self._context, "id", None)
+        if context_id is not None:
+            return {"context_id": context_id, "command_id": self._command_id}
+        return None
+
+    def _clear_confirmation(self):
+        attributes = dict(self.extra_state_attributes or {})
+        previous = attributes.pop("sonoff_command_confirmation", None)
+        self._attr_extra_state_attributes = attributes or None
+        if previous is not None and self.hass:
+            self._async_write_ha_state()
+
+    def _command_started(self, command):
+        if (
+            command["device_id"] == self.device["deviceid"]
+            and command["channel"] == self.channel
+        ):
+            self._clear_confirmation()
+
+    def _command_confirmed(self, confirmation):
+        if (
+            confirmation["device_id"] != self.device["deviceid"]
+            or confirmation["channel"] != self.channel
+            or confirmation["command_id"] != self._command_id
+        ):
+            return
+        self._attr_extra_state_attributes = {
+            **(self.extra_state_attributes or {}),
+            "sonoff_command_confirmation": confirmation,
+        }
+        if self.hass:
+            self._async_write_ha_state()
+
     async def async_turn_on(self, *args, **kwargs):
         params = {"switches": [{"outlet": self.channel, "switch": "on"}]}
-        await self.ewelink.send_bulk(self.device, params)
+        await self.ewelink.send_bulk(
+            self.device, params, confirmation=self._new_confirmation()
+        )
 
     async def async_turn_off(self):
         params = {"switches": [{"outlet": self.channel, "switch": "off"}]}
-        await self.ewelink.send_bulk(self.device, params)
+        await self.ewelink.send_bulk(
+            self.device, params, confirmation=self._new_confirmation()
+        )
 
 
 # noinspection PyAbstractClass

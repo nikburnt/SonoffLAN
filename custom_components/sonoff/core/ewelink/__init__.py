@@ -13,6 +13,8 @@ _LOGGER = logging.getLogger(__name__)
 
 SIGNAL_ADD_ENTITIES = "add_entities"
 SIGNAL_BUTTON_EVENT = "button_event"
+SIGNAL_COMMAND_CONFIRMED = "command_confirmed"
+SIGNAL_COMMAND_STARTED = "command_started"
 LOCAL_TTL = 60
 M5_BULK_DELAY = 0.025
 
@@ -28,6 +30,7 @@ class XRegistry(XRegistryBase):
         self._switches_received_at: dict[str, dict[int, float]] = {}
         self._relay_reports = RelayReports()
         self._bulk_tasks: dict[int, asyncio.Task] = {}
+        self._bulk_confirmations: dict[int, dict[int, dict]] = {}
         self._bulk_sends: set[asyncio.Task] = set()
 
         self.cloud = XRegistryCloud(session)
@@ -90,6 +93,7 @@ class XRegistry(XRegistryBase):
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
         self._bulk_tasks.clear()
+        self._bulk_confirmations.clear()
         self._bulk_sends.clear()
         self.devices.clear()
         self._switches_received_at.clear()
@@ -111,6 +115,7 @@ class XRegistry(XRegistryBase):
         cmd_lan: str = None,
         query_cloud: bool = True,
         timeout_lan: int = 1,
+        confirmations: dict | None = None,
     ) -> None:
         """Send command to device with LAN and Cloud. Usual params are same.
 
@@ -126,7 +131,7 @@ class XRegistry(XRegistryBase):
         """
         seq = await self.sequence()
 
-        request = self._relay_reports.start(device, seq, params)
+        request = self._start_relay_request(device, seq, params, confirmations)
         ok = None
         try:
             if "parent" in device:
@@ -173,7 +178,7 @@ class XRegistry(XRegistryBase):
         finally:
             self._finish_relay_request(device, request, ok)
 
-    async def send_bulk(self, device: XDevice, params: dict):
+    async def send_bulk(self, device: XDevice, params: dict, *, confirmation=None):
         assert "switches" in params
 
         if "params_bulk" in device:
@@ -189,6 +194,12 @@ class XRegistry(XRegistryBase):
             device["params_bulk"] = params
 
         key = id(device)
+        contexts = self._bulk_confirmations.setdefault(key, {})
+        for channel in params["switches"]:
+            if confirmation is not None:
+                contexts[channel["outlet"]] = confirmation.copy()
+            else:
+                contexts.pop(channel["outlet"], None)
         if (task := self._bulk_tasks.get(key)) is None:
             task = asyncio.ensure_future(self._send_bulk(device))
             self._bulk_tasks[key] = task
@@ -208,11 +219,15 @@ class XRegistry(XRegistryBase):
             )
             await asyncio.sleep(delay)
             self._bulk_tasks.pop(key, None)
+            confirmations = self._bulk_confirmations.pop(key, {})
             if params := device.pop("params_bulk", None):
+                if confirmations:
+                    return await self.send(device, params, confirmations=confirmations)
                 return await self.send(device, params)
         finally:
             if self._bulk_tasks.get(key) is asyncio.current_task():
                 self._bulk_tasks.pop(key, None)
+                self._bulk_confirmations.pop(key, None)
                 device.pop("params_bulk", None)
 
     # TODO: Unify send_bulk and send_bulk_configure
@@ -242,7 +257,7 @@ class XRegistry(XRegistryBase):
         if not self.can_cloud(device):
             return None
         seq = await self.sequence()
-        request = self._relay_reports.start(device, seq, params) if params else None
+        request = self._start_relay_request(device, seq, params) if params else None
         ok = None
         try:
             ok = await self.cloud.send(device, params, seq)
@@ -296,6 +311,7 @@ class XRegistry(XRegistryBase):
             device["params"]["sledOnline"] = params["sledOnline"]
 
         self.dispatcher_send(did, params)
+        self._dispatch_confirmations(did)
 
     def local_update(self, msg: dict):
         mainid: str = msg["deviceid"]
@@ -369,22 +385,37 @@ class XRegistry(XRegistryBase):
         device["localrecv"] = ts
 
         self.dispatcher_send(realid, params)
+        self._dispatch_confirmations(realid)
 
         # send empty msg to main device for updating available flag
         if realid != mainid:
             self.dispatcher_send(mainid, None)
 
+    def _start_relay_request(self, device, sequence, params, confirmations=None):
+        request = self._relay_reports.start(device, sequence, params, confirmations)
+        if request is not None:
+            for outlet in request.values:
+                self.dispatcher_send(
+                    SIGNAL_COMMAND_STARTED,
+                    {"device_id": device["deviceid"], "channel": outlet},
+                )
+        return request
+
     def _finish_relay_request(self, device, request, result):
         channels = self._relay_reports.finish(request, result == "online")
-        if not channels:
-            return
         did = device["deviceid"]
-        params = {"switches": channels}
-        self._update_device_params(device, params)
-        latest = self._switches_received_at.setdefault(did, {})
-        for channel in channels:
-            latest[channel["outlet"]] = time.monotonic()
-        self.dispatcher_send(did, params)
+        if channels:
+            params = {"switches": channels}
+            self._update_device_params(device, params)
+            latest = self._switches_received_at.setdefault(did, {})
+            for channel in channels:
+                latest[channel["outlet"]] = time.monotonic()
+            self.dispatcher_send(did, params)
+        self._dispatch_confirmations(did)
+
+    def _dispatch_confirmations(self, deviceid):
+        for confirmation in self._relay_reports.confirmations(deviceid):
+            self.dispatcher_send(SIGNAL_COMMAND_CONFIRMED, confirmation)
 
     def _filter_switches(
         self,
