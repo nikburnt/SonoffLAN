@@ -246,6 +246,7 @@ class XRegistryLocal(XRegistryBase):
                         msg = {
                             "deviceid": device["deviceid"],
                             "localtype": device.get("localtype"),
+                            "request_sequence": payload["sequence"],
                             "seq": resp["seq"],
                             "data": resp["data"],
                             "iv": resp["iv"],

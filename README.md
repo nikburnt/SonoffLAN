@@ -35,6 +35,29 @@ and rejection of cached startup and relay-feedback actions. CI runs the full
 suite on Home Assistant 2026.8.1 and 2026.9.3. A real button press through the
 consumer automation remains a separate deployment check.
 
+### Confirmed M5 relay state
+
+After a successful M5 relay command (UIIDs 160/161/162), an unverified LAN or
+cloud snapshot cannot reverse that channel. There is no expiry window: a packet
+first delivered late is not newer state, and LAN counters are not compared with
+cloud request IDs. New commands and their correlated confirmations remain
+independent per channel. Other models and uncommanded channels keep their
+existing report behavior; sensor and availability fields still update.
+
+A full state reply from the device is associated with its HTTP request. It can
+replace the retained value only when its read started without a pending write
+to that channel and no newer command has been issued. A cloud query may return
+cached state, so its correlation ID alone is not accepted as device-read proof.
+An ACK does not fabricate a relay observation: matching feedback received before
+it is released only after success. Failed commands do not install a state fence.
+
+This is intentionally conservative. An external eWeLink/Matter change that only
+produces an unverified conflicting snapshot is retained as the previous HA state
+until a verifiable update. M5 firmware without a full local state-read endpoint
+may require a new HA relay command for that update. The fences are kept in memory
+and reset on integration reload. This change adds no automatic polling, command
+delays, action suppression windows or new dependencies.
+
 Home Assistant custom component for control [Sonoff](https://www.itead.cc/) devices with [eWeLink](https://www.ewelink.cc/en/) (original) firmware over LAN and/or Cloud.
 
 > [!CAUTION]

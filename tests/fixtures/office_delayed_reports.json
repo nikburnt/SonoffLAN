@@ -1,0 +1,78 @@
+{
+  "source": "Office entrance capture 2026-10-18 09:24:22, sanitized. Outlets remapped: Main=0, Ambient=1.",
+  "reports": [
+    {
+      "after_ack": 0.070555,
+      "transport": "cloud",
+      "sequence": null,
+      "params": {
+        "switches": [
+          {
+            "outlet": 1,
+            "switch": "on"
+          },
+          {
+            "outlet": 0,
+            "switch": "off"
+          }
+        ]
+      },
+      "old_state": true
+    },
+    {
+      "after_ack": 0.075555,
+      "transport": "cloud",
+      "sequence": "1792304662011",
+      "params": {
+        "switches": [
+          {
+            "outlet": 0,
+            "switch": "on"
+          }
+        ]
+      },
+      "old_state": false
+    },
+    {
+      "after_ack": 0.093555,
+      "transport": "lan",
+      "sequence": "460",
+      "params": {
+        "switches": [
+          {
+            "outlet": 1,
+            "switch": "on"
+          },
+          {
+            "outlet": 0,
+            "switch": "off"
+          }
+        ],
+        "triggerType": 11,
+        "localKeyPass": {
+          "outlet": 0,
+          "key": 0
+        }
+      },
+      "old_state": true
+    },
+    {
+      "after_ack": 0.379555,
+      "transport": "cloud",
+      "sequence": null,
+      "params": {
+        "switches": [
+          {
+            "outlet": 1,
+            "switch": "on"
+          },
+          {
+            "outlet": 0,
+            "switch": "on"
+          }
+        ]
+      },
+      "old_state": false
+    }
+  ]
+}

@@ -7,6 +7,7 @@ from aiohttp import ClientSession
 from .base import SIGNAL_CONNECTED, SIGNAL_UPDATE, XDevice, XRegistryBase
 from .cloud import XRegistryCloud
 from .local import XRegistryLocal
+from .relay import RelayReports
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ class XRegistry(XRegistryBase):
 
         self.devices: dict[str, XDevice] = {}
         self._switches_received_at: dict[str, dict[int, float]] = {}
+        self._relay_reports = RelayReports()
         self._bulk_tasks: dict[int, asyncio.Task] = {}
         self._bulk_sends: set[asyncio.Task] = set()
 
@@ -90,6 +92,7 @@ class XRegistry(XRegistryBase):
         self._bulk_sends.clear()
         self.devices.clear()
         self._switches_received_at.clear()
+        self._relay_reports.clear()
         self.dispatcher.clear()
 
         await self.cloud.stop()
@@ -122,45 +125,52 @@ class XRegistry(XRegistryBase):
         """
         seq = await self.sequence()
 
-        if "parent" in device:
-            main_device = device["parent"]
-            if params_lan is None and params is not None:
-                params_lan = params.copy()
-            if params_lan:
-                params_lan["subDevId"] = device["deviceid"]
-        else:
-            main_device = device
+        request = self._relay_reports.start(device, seq, params)
+        ok = None
+        try:
+            if "parent" in device:
+                main_device = device["parent"]
+                if params_lan is None and params is not None:
+                    params_lan = params.copy()
+                if params_lan:
+                    params_lan["subDevId"] = device["deviceid"]
+            else:
+                main_device = device
 
-        can_local = self.can_local(device)
-        can_cloud = self.can_cloud(device)
+            can_local = self.can_local(device)
+            can_cloud = self.can_cloud(device)
 
-        if can_local and can_cloud:
-            # try to send a command locally (wait no more than a second)
-            ok = await self.local.send(
-                main_device, params_lan or params, cmd_lan, seq, timeout_lan
-            )
+            if can_local and can_cloud:
+                # try to send a command locally (wait no more than a second)
+                ok = await self.local.send(
+                    main_device, params_lan or params, cmd_lan, seq, timeout_lan
+                )
 
-            # otherwise send a command through the cloud
-            if ok != "online":
-                ok = await self.cloud.send(device, params, seq)
+                # otherwise send a command through the cloud
+                if ok != "online":
+                    ok = await self.cloud.send(device, params, seq)
+                    if ok != "online":
+                        main_device["localping"] = 0  # instant local ping request
+                    elif query_cloud and params:
+                        # force update device actual status
+                        await self.cloud.send(device, timeout=0)
+
+            elif can_local:
+                ok = await self.local.send(
+                    main_device, params_lan or params, cmd_lan, seq
+                )
                 if ok != "online":
                     main_device["localping"] = 0  # instant local ping request
-                elif query_cloud and params:
-                    # force update device actual status
+
+            elif can_cloud:
+                ok = await self.cloud.send(device, params, seq)
+                if ok == "online" and query_cloud and params:
                     await self.cloud.send(device, timeout=0)
 
-        elif can_local:
-            ok = await self.local.send(main_device, params_lan or params, cmd_lan, seq)
-            if ok != "online":
-                main_device["localping"] = 0  # instant local ping request
-
-        elif can_cloud:
-            ok = await self.cloud.send(device, params, seq)
-            if ok == "online" and query_cloud and params:
-                await self.cloud.send(device, timeout=0)
-
-        else:
-            return
+            else:
+                return
+        finally:
+            self._finish_relay_request(device, request, ok)
 
     async def send_bulk(self, device: XDevice, params: dict):
         assert "switches" in params
@@ -225,10 +235,16 @@ class XRegistry(XRegistryBase):
     ) -> str | None:
         if not self.can_cloud(device):
             return None
-        ok = await self.cloud.send(device, params)
-        if ok == "online" and query and params:
-            await self.cloud.send(device, timeout=0)
-        return ok
+        seq = await self.sequence()
+        request = self._relay_reports.start(device, seq, params) if params else None
+        ok = None
+        try:
+            ok = await self.cloud.send(device, params, seq)
+            if ok == "online" and query and params:
+                await self.cloud.send(device, timeout=0)
+            return ok
+        finally:
+            self._finish_relay_request(device, request, ok)
 
     def cloud_connected(self):
         for deviceid in self.devices.keys():
@@ -248,7 +264,12 @@ class XRegistry(XRegistryBase):
         if not device or "online" not in device:
             return
 
-        params = self._filter_switches(did, msg["params"], time.monotonic())
+        params = self._filter_switches(
+            did,
+            msg["params"],
+            time.monotonic(),
+            sequence=msg.get("sequence") if msg.get("error", 0) == 0 else None,
+        )
         if "switches" in params:
             self._update_device_params(device, {"switches": params["switches"]})
         device["cloud_seq"] = seq = msg.get("sequence")
@@ -321,7 +342,11 @@ class XRegistry(XRegistryBase):
         _LOGGER.debug(f"{realid} <= {tag} | {host} | %s | {seq}", params)
 
         params = self._filter_switches(
-            realid, params, msg.get("received_at", time.monotonic())
+            realid,
+            params,
+            msg.get("received_at", time.monotonic()),
+            sequence=msg.get("request_sequence"),
+            direct=True,
         )
         self._update_device_params(device, params)
 
@@ -343,15 +368,45 @@ class XRegistry(XRegistryBase):
         if realid != mainid:
             self.dispatcher_send(mainid, None)
 
-    def _filter_switches(self, deviceid: str, params: dict, received_at: float):
-        """Reject only channels older than an already accepted state report."""
+    def _finish_relay_request(self, device, request, result):
+        channels = self._relay_reports.finish(request, result == "online")
+        if not channels:
+            return
+        did = device["deviceid"]
+        params = {"switches": channels}
+        self._update_device_params(device, params)
+        latest = self._switches_received_at.setdefault(did, {})
+        for channel in channels:
+            latest[channel["outlet"]] = time.monotonic()
+        self.dispatcher_send(did, params)
+
+    def _filter_switches(
+        self,
+        deviceid: str,
+        params: dict,
+        received_at: float,
+        sequence=None,
+        direct=False,
+    ):
+        """Keep command evidence separate from snapshot receipt order."""
         if "switches" not in params:
             return params
         latest = self._switches_received_at.setdefault(deviceid, {})
         switches = []
         for channel in params["switches"]:
             outlet = channel["outlet"]
-            if received_at < latest.get(outlet, float("-inf")):
+            accepted, verified = self._relay_reports.accept(
+                deviceid, channel, received_at, sequence, direct
+            )
+            if not accepted:
+                _LOGGER.debug(
+                    "%s !! Ignoring unverified relay state for outlet %s: %s",
+                    deviceid,
+                    outlet,
+                    channel["switch"],
+                )
+                continue
+            if not verified and received_at < latest.get(outlet, float("-inf")):
                 _LOGGER.debug(
                     "%s !! Ignoring older LAN state for outlet %s (%.3f < %.3f)",
                     deviceid,
@@ -360,7 +415,7 @@ class XRegistry(XRegistryBase):
                     latest[outlet],
                 )
                 continue
-            latest[outlet] = received_at
+            latest[outlet] = max(received_at, latest.get(outlet, float("-inf")))
             switches.append(channel)
         if len(switches) == len(params["switches"]):
             return params
@@ -444,7 +499,13 @@ class XRegistry(XRegistryBase):
     async def send_local(
         self, device: XDevice, command: str = None, params: dict = None
     ):
-        ok = await self.local.send(device, params, command)
+        seq = await self.sequence()
+        request = self._relay_reports.start(device, seq, params)
+        ok = None
+        try:
+            ok = await self.local.send(device, params, command, seq)
+        finally:
+            self._finish_relay_request(device, request, ok)
         if ok == "online":
             if not device["local"]:
                 device["local"] = True
