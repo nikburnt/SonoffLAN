@@ -35,6 +35,15 @@ and rejection of cached startup and relay-feedback actions. CI runs the full
 suite on Home Assistant 2026.8.1 and 2026.9.3. A real button press through the
 consumer automation remains a separate deployment check.
 
+### M5 relay batching
+
+M5 relay channels (UIIDs 160/161/162) share a 25 ms command-coalescing window
+instead of 100 ms. Nearby channel commands still share one transport result;
+commands arriving after the window form a separate batch. Each caller waits
+for its batch to finish, preserving rapid repeats even when ACKs are delayed.
+Other models, configuration commands and cloud rate limits keep their existing
+timing. Button recognition and relay-report freshness rules are unchanged.
+
 ### Confirmed M5 relay state
 
 After a successful M5 relay command (UIIDs 160/161/162), an unverified LAN or

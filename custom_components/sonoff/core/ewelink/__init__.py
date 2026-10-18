@@ -14,6 +14,7 @@ _LOGGER = logging.getLogger(__name__)
 SIGNAL_ADD_ENTITIES = "add_entities"
 SIGNAL_BUTTON_EVENT = "button_event"
 LOCAL_TTL = 60
+M5_BULK_DELAY = 0.025
 
 
 class XRegistry(XRegistryBase):
@@ -200,7 +201,12 @@ class XRegistry(XRegistryBase):
     async def _send_bulk(self, device: XDevice):
         key = id(device)
         try:
-            await asyncio.sleep(0.1)
+            delay = (
+                M5_BULK_DELAY
+                if device.get("extra", {}).get("uiid") in (160, 161, 162)
+                else 0.1
+            )
+            await asyncio.sleep(delay)
             self._bulk_tasks.pop(key, None)
             if params := device.pop("params_bulk", None):
                 return await self.send(device, params)

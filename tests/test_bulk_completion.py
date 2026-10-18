@@ -59,15 +59,18 @@ async def _two_channels_wait_for_the_same_transport_result():
 
 
 @pytest.mark.parametrize("cancelled_caller", [0, 1])
-def test_one_cancelled_caller_does_not_cancel_the_other_channel(cancelled_caller):
+@pytest.mark.parametrize("uiid", [None, 161])
+def test_one_cancelled_caller_does_not_cancel_the_other_channel(cancelled_caller, uiid):
     asyncio.run(
-        _one_cancelled_caller_does_not_cancel_the_other_channel(cancelled_caller)
+        _one_cancelled_caller_does_not_cancel_the_other_channel(cancelled_caller, uiid)
     )
 
 
-async def _one_cancelled_caller_does_not_cancel_the_other_channel(cancelled_caller):
+async def _one_cancelled_caller_does_not_cancel_the_other_channel(
+    cancelled_caller, uiid
+):
     registry = XRegistry(None)
-    device = {"deviceid": "1000123abc"}
+    device = {"deviceid": "1000123abc", "extra": {"uiid": uiid}}
     started = asyncio.Event()
     ack = asyncio.Event()
     transport_cancelled = []
@@ -99,13 +102,14 @@ async def _one_cancelled_caller_does_not_cancel_the_other_channel(cancelled_call
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-def test_a_second_press_cannot_overtake_the_coalesced_on_command():
-    asyncio.run(_a_second_press_cannot_overtake_the_coalesced_on_command())
+@pytest.mark.parametrize("uiid", [None, 161])
+def test_a_second_press_cannot_overtake_the_coalesced_on_command(uiid):
+    asyncio.run(_a_second_press_cannot_overtake_the_coalesced_on_command(uiid))
 
 
-async def _a_second_press_cannot_overtake_the_coalesced_on_command():
+async def _a_second_press_cannot_overtake_the_coalesced_on_command(uiid):
     registry = XRegistry(None)
-    device = {"deviceid": "1000123abc"}
+    device = {"deviceid": "1000123abc", "extra": {"uiid": uiid}}
     started = asyncio.Event()
     ack = asyncio.Event()
     calls = []
