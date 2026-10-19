@@ -4,7 +4,13 @@ import time
 
 from aiohttp import ClientSession
 
-from .base import SIGNAL_CONNECTED, SIGNAL_UPDATE, XDevice, XRegistryBase
+from .base import (
+    SIGNAL_CONNECTED,
+    SIGNAL_UPDATE,
+    SIGNAL_UPDATE_HOST,
+    XDevice,
+    XRegistryBase,
+)
 from .cloud import XRegistryCloud
 from .local import XRegistryLocal
 from .relay import RelayReports
@@ -37,9 +43,10 @@ class XRegistry(XRegistryBase):
         self.cloud.dispatcher_connect(SIGNAL_CONNECTED, self.cloud_connected)
         self.cloud.dispatcher_connect(SIGNAL_UPDATE, self.cloud_update)
 
-        self.local = XRegistryLocal(session)
+        self.local = XRegistryLocal(session, self.devices)
         self.local.dispatcher_connect(SIGNAL_CONNECTED, self.local_connected)
         self.local.dispatcher_connect(SIGNAL_UPDATE, self.local_update)
+        self.local.dispatcher_connect(SIGNAL_UPDATE_HOST, self.local_update_host)
 
     def setup_devices(self, devices: list[XDevice]) -> list:
         from ..devices import get_spec
@@ -390,6 +397,23 @@ class XRegistry(XRegistryBase):
         # send empty msg to main device for updating available flag
         if realid != mainid:
             self.dispatcher_send(mainid, None)
+
+    def local_update_host(self, msg: dict):
+        """Apply resolved address metadata without replaying the TXT state."""
+        did = msg["deviceid"]
+        device = self.devices.get(did)
+        host = msg.get("host")
+        if not device or not host:
+            return
+        if key := device.get("devicekey"):
+            try:
+                self.local.decrypt_msg(msg, key)
+            except Exception:
+                return
+        device["localtype"] = msg["localtype"]
+        if device.get("host") != host:
+            device["host"] = host
+            self.dispatcher_send(did, {"host": host})
 
     def _start_relay_request(self, device, sequence, params, confirmations=None):
         request = self._relay_reports.start(device, sequence, params, confirmations)

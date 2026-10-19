@@ -6,6 +6,7 @@ from aiohttp import ClientSession
 
 SIGNAL_CONNECTED = "connected"
 SIGNAL_UPDATE = "update"
+SIGNAL_UPDATE_HOST = "update_host"
 
 
 class XDevice(TypedDict, total=False):

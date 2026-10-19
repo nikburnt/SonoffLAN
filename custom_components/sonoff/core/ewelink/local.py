@@ -19,7 +19,13 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from zeroconf import DNSText, ServiceStateChange, Zeroconf
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo
 
-from .base import SIGNAL_CONNECTED, SIGNAL_UPDATE, XDevice, XRegistryBase
+from .base import (
+    SIGNAL_CONNECTED,
+    SIGNAL_UPDATE,
+    SIGNAL_UPDATE_HOST,
+    XDevice,
+    XRegistryBase,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -60,8 +66,11 @@ class XRegistryLocal(XRegistryBase):
     browser: AsyncServiceBrowser = None
     online: bool = False
 
-    def __init__(self, session: aiohttp.ClientSession):
+    def __init__(
+        self, session: aiohttp.ClientSession, devices: dict[str, XDevice] | None = None
+    ):
         super().__init__(session)
+        self.devices = devices if devices is not None else {}
         self._txt_received_at: dict[str, dict[bytes, float]] = {}
 
     def start(self, zeroconf: Zeroconf):
@@ -113,6 +122,19 @@ class XRegistryLocal(XRegistryBase):
         """Step 2. Request additional info about add and update event from device."""
         deviceid = name[8:18]
         try:
+            # A complete TXT is usable even when DNS A/AAAA has expired.
+            host = self.devices.get(deviceid, {}).get("host")
+            delivered = text is not None and bool(host)
+            if delivered:
+                properties = AsyncServiceInfo(
+                    service_type, name, properties=text
+                ).properties
+                data = {
+                    k.decode(): v.decode() if isinstance(v, bytes) else v
+                    for k, v in properties.items()
+                }
+                self._handler3(deviceid, host, data, received_at)
+
             info = AsyncServiceInfo(service_type, name)
             resolved = await info.async_request(zeroconf, 3000)
             # Resolution may read a newer TXT while waiting for SRV/address records.
@@ -144,7 +166,13 @@ class XRegistryLocal(XRegistryBase):
 
             if text is None:
                 received_at = self._received_at(zeroconf, name, info.text)
-            self._handler3(deviceid, host, data, received_at)
+            self._handler3(
+                deviceid,
+                host,
+                data,
+                received_at,
+                signal=SIGNAL_UPDATE_HOST if delivered else SIGNAL_UPDATE,
+            )
 
         except Exception as e:
             _LOGGER.debug(f"{deviceid} <= Local0 | Zeroconf error", exc_info=e)
@@ -164,7 +192,13 @@ class XRegistryLocal(XRegistryBase):
         return None
 
     def _handler3(
-        self, deviceid: str, host: str, data: dict, received_at: float | None = None
+        self,
+        deviceid: str,
+        host: str,
+        data: dict,
+        received_at: float | None = None,
+        *,
+        signal: str = SIGNAL_UPDATE,
     ):
         """Step 3. Process new data from device."""
 
@@ -188,7 +222,7 @@ class XRegistryLocal(XRegistryBase):
         elif raw:  # no data field from zbbridgeu
             msg["params"] = json.loads(raw)
 
-        self.dispatcher_send(SIGNAL_UPDATE, msg)
+        self.dispatcher_send(signal, msg)
 
     async def send(
         self,

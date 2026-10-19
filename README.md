@@ -51,6 +51,14 @@ an earlier notification with the latest cached TXT, including while SRV/address
 records are still missing. This changes report delivery only; LAN snapshots
 remain subject to the existing relay freshness and button-recognition guards.
 
+For a device whose LAN host is already known, received TXT reports are delivered
+without waiting for DNS A/AAAA resolution. Address discovery continues separately
+and updates only host metadata, without replaying the state or button payload.
+Original TXT contents and receipt times remain attached to each individual report.
+Devices without a known host still complete normal initial discovery.
+This removes an address lookup from the LAN report path; M5 physical-button
+recognition keeps the existing guard against stale `localKeyPass` snapshots.
+
 ### Verified M5 command state
 
 M5 switch entities expose `sonoff_command_confirmation` only after a successful
