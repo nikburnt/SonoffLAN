@@ -12,6 +12,7 @@ import ipaddress
 import json
 import logging
 import os
+import time
 
 import aiohttp
 from cryptography.hazmat.primitives import padding
@@ -95,6 +96,7 @@ class XRegistryLocal(XRegistryBase):
         state_change: ServiceStateChange,
     ):
         """Step 1. Receive change event from zeroconf."""
+        notified_at = time.monotonic()
         if state_change == ServiceStateChange.Removed:
             self._txt_received_at.pop(name.lower(), None)
             return
@@ -107,9 +109,19 @@ class XRegistryLocal(XRegistryBase):
         record = zeroconf.cache.get_by_details(name, 16, 1)  # TXT/IN
         text = record.text if isinstance(record, DNSText) else None
         received_at = self._received_at(zeroconf, name, text)
-        asyncio.create_task(
-            self._handler2(zeroconf, service_type, name, text, received_at)
+        coro = self._handler2(
+            zeroconf, service_type, name, text, received_at, notified_at
         )
+        if (
+            text is not None
+            and self.devices.get(name[8:18], {}).get("host")
+            and hasattr(asyncio, "eager_task_factory")  # Python 3.12+
+        ):
+            # Deliver known-device TXT before queued callbacks; DNS I/O may suspend.
+            asyncio.Task(coro, loop=asyncio.get_running_loop(), eager_start=True)
+        else:
+            # Preserve initial discovery and compatibility with older Python.
+            asyncio.create_task(coro)
 
     async def _handler2(
         self,
@@ -118,8 +130,17 @@ class XRegistryLocal(XRegistryBase):
         name: str,
         text: bytes | None = None,
         received_at: float | None = None,
+        notified_at: float | None = None,
     ):
         """Step 2. Request additional info about add and update event from device."""
+        timing = (
+            {
+                "notified_monotonic": notified_at,
+                "handler_started_monotonic": time.monotonic(),
+            }
+            if _LOGGER.isEnabledFor(logging.DEBUG)
+            else None
+        )
         deviceid = name[8:18]
         try:
             # A complete TXT is usable even when DNS A/AAAA has expired.
@@ -133,7 +154,7 @@ class XRegistryLocal(XRegistryBase):
                     k.decode(): v.decode() if isinstance(v, bytes) else v
                     for k, v in properties.items()
                 }
-                self._handler3(deviceid, host, data, received_at)
+                self._handler3(deviceid, host, data, received_at, timing=timing)
 
             info = AsyncServiceInfo(service_type, name)
             resolved = await info.async_request(zeroconf, 3000)
@@ -172,6 +193,7 @@ class XRegistryLocal(XRegistryBase):
                 data,
                 received_at,
                 signal=SIGNAL_UPDATE_HOST if delivered else SIGNAL_UPDATE,
+                timing=timing,
             )
 
         except Exception as e:
@@ -199,8 +221,11 @@ class XRegistryLocal(XRegistryBase):
         received_at: float | None = None,
         *,
         signal: str = SIGNAL_UPDATE,
+        timing: dict | None = None,
     ):
         """Step 3. Process new data from device."""
+        if timing is not None:
+            dispatch_started = time.monotonic()
 
         raw = "".join([data[f"data{i}"] for i in range(1, 5, 1) if f"data{i}" in data])
 
@@ -223,6 +248,21 @@ class XRegistryLocal(XRegistryBase):
             msg["params"] = json.loads(raw)
 
         self.dispatcher_send(signal, msg)
+        if timing is not None:
+            finished_at = time.monotonic()
+            _LOGGER.debug(
+                "%s <= LocalTiming | %s",
+                deviceid,
+                {
+                    **timing,
+                    "seq": msg["seq"],
+                    "signal": signal,
+                    "txt_received_monotonic": received_at,
+                    "dispatch_started_monotonic": dispatch_started,
+                    "dispatch_finished_monotonic": finished_at,
+                    "finished_epoch": time.time(),
+                },
+            )
 
     async def send(
         self,

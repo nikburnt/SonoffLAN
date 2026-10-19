@@ -59,6 +59,40 @@ Devices without a known host still complete normal initial discovery.
 This removes an address lookup from the LAN report path; M5 physical-button
 recognition keeps the existing guard against stale `localKeyPass` snapshots.
 
+### Immediate TXT processing and receive timing
+
+Fork release `3.13.1.10` starts known-host TXT handlers eagerly in the zeroconf
+notification callback, before already queued Core callbacks. The handler still
+suspends for DNS I/O; new/addressless devices keep the normal queued setup path.
+Python without eager-task support keeps normal delivery. This does not install
+a global task factory. Frozen payloads,
+original receipt times, initial discovery and host-only background updates keep
+their existing behavior. This removes a scheduling boundary after notification;
+it cannot remove a pause before Core reads the UDP socket.
+
+At DEBUG level, `custom_components.sonoff.core.ewelink.local` emits
+`<deviceid> <= LocalTiming | {...}` after each successful dispatch. `seq` joins
+the timing to the TXT capture; `signal=update` is a state dispatch and
+`signal=update_host` is metadata resolution, not another button or state report.
+The diagnostic contains no TXT payload, encryption material or device key.
+
+The timestamps are seconds on the host monotonic clock:
+
+- `txt_received_monotonic`: the preserved first known receipt of this TXT from
+  zeroconf's DNS record time; absent receipt evidence remains `None`.
+- `notified_monotonic`: entry into the integration's browser callback, or `None`
+  if discovery was invoked directly without that callback.
+- `handler_started_monotonic`: entry into the TXT processing coroutine.
+- `dispatch_started_monotonic` / `dispatch_finished_monotonic`: boundaries of
+  payload decoding and registry/consumer dispatch.
+
+`finished_epoch` gives the adjacent wall-clock UNIX time for correlation with
+tcpdump. Compare elapsed stages on the monotonic clock. A cached TXT replay
+retains its original receipt time: its age is not a new UDP processing delay.
+For a newly received TXT, align the raw packet with the receipt marker, then
+compare receipt → notification → handler → dispatch. Existing button recognition,
+per-channel command proofs and stale-report guards are unchanged.
+
 ### Verified M5 command state
 
 M5 switch entities expose `sonoff_command_confirmation` only after a successful
