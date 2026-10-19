@@ -95,15 +95,34 @@ class XRegistryLocal(XRegistryBase):
         if not name.lower().startswith("ewelink"):
             return
 
-        self._received_at(zeroconf, name)
-        asyncio.create_task(self._handler2(zeroconf, service_type, name))
+        # Freeze this notification's TXT before another datagram updates the cache.
+        record = zeroconf.cache.get_by_details(name, 16, 1)  # TXT/IN
+        text = record.text if isinstance(record, DNSText) else None
+        received_at = self._received_at(zeroconf, name, text)
+        asyncio.create_task(
+            self._handler2(zeroconf, service_type, name, text, received_at)
+        )
 
-    async def _handler2(self, zeroconf: Zeroconf, service_type: str, name: str):
+    async def _handler2(
+        self,
+        zeroconf: Zeroconf,
+        service_type: str,
+        name: str,
+        text: bytes | None = None,
+        received_at: float | None = None,
+    ):
         """Step 2. Request additional info about add and update event from device."""
         deviceid = name[8:18]
         try:
             info = AsyncServiceInfo(service_type, name)
-            if not await info.async_request(zeroconf, 3000) or not info.properties:
+            resolved = await info.async_request(zeroconf, 3000)
+            # Resolution may read a newer TXT while waiting for SRV/address records.
+            properties = (
+                AsyncServiceInfo(service_type, name, properties=text).properties
+                if text is not None
+                else info.properties
+            )
+            if not resolved or not properties:
                 _LOGGER.debug(f"{deviceid} <= Local0 | Can't get zeroconf info")
                 return
 
@@ -121,12 +140,12 @@ class XRegistryLocal(XRegistryBase):
 
             data = {
                 k.decode(): v.decode() if isinstance(v, bytes) else v
-                for k, v in info.properties.items()
+                for k, v in properties.items()
             }
 
-            self._handler3(
-                deviceid, host, data, self._received_at(zeroconf, name, info.text)
-            )
+            if text is None:
+                received_at = self._received_at(zeroconf, name, info.text)
+            self._handler3(deviceid, host, data, received_at)
 
         except Exception as e:
             _LOGGER.debug(f"{deviceid} <= Local0 | Zeroconf error", exc_info=e)

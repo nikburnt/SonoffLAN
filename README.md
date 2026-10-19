@@ -35,6 +35,14 @@ and rejection of cached startup and relay-feedback actions. CI runs the full
 suite on Home Assistant 2026.8.1 and 2026.9.3. A real button press through the
 consumer automation remains a separate deployment check.
 
+### mDNS TXT reception
+
+Each service notification keeps its TXT payload and original receipt time
+before asynchronous address resolution begins. A burst of updates cannot replace
+an earlier notification with the latest cached TXT, including while SRV/address
+records are still missing. This changes report delivery only; LAN snapshots
+remain subject to the existing relay freshness and button-recognition guards.
+
 ### Verified M5 command state
 
 M5 switch entities expose `sonoff_command_confirmation` only after a successful
