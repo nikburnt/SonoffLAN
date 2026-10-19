@@ -35,6 +35,14 @@ and rejection of cached startup and relay-feedback actions. CI runs the full
 suite on Home Assistant 2026.8.1 and 2026.9.3. A real button press through the
 consumer automation remains a separate deployment check.
 
+### Upstream synchronization
+
+Fork release `3.13.1.8` includes upstream changes through `08135f0` (following
+upstream `3.13.2`): T6 getState compatibility, MINIR4M action recognition,
+NSPanel Pro Gen2 and TRV Gen2 support, and device-registry parent references.
+The managed button platform, command confirmations, report freshness guards
+and mDNS TXT reception fix remain in place.
+
 ### mDNS TXT reception
 
 Each service notification keeps its TXT payload and original receipt time

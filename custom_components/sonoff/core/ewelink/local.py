@@ -14,7 +14,6 @@ import logging
 import os
 
 import aiohttp
-from aiohttp.hdrs import CONTENT_TYPE
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from zeroconf import DNSText, ServiceStateChange, Zeroconf
@@ -250,14 +249,6 @@ class XRegistryLocal(XRegistryBase):
             r = task.result()
 
             try:
-                # some devices don't support getState command
-                # https://github.com/AlexxIT/SonoffLAN/issues/1442
-                if r.headers.get(CONTENT_TYPE) == "text/html":
-                    _LOGGER.debug(f"{log} <= text/html")
-                    if command == "getState":
-                        return "online"
-                    return "error"
-
                 resp: dict = await r.json()
                 _LOGGER.debug(f"{log} <= {resp}")
                 if resp["error"] == 0:
@@ -283,7 +274,14 @@ class XRegistryLocal(XRegistryBase):
                     return "error"
 
             except Exception as e:
-                _LOGGER.debug(f"{log} !! Can't read JSON {e}")
+                # some devices don't support getState command
+                # https://github.com/AlexxIT/SonoffLAN/issues/1442
+                # https://github.com/AlexxIT/SonoffLAN/issues/1907
+                if command == "getState":
+                    _LOGGER.debug(f"{log} <= OK, but: {e}")
+                    return "online"
+
+                _LOGGER.debug(f"{log} !! Error: {e}")
                 return "error"
 
         except asyncio.TimeoutError:

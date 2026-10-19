@@ -44,13 +44,16 @@ class _Handler(BaseHTTPRequestHandler):
         ).encode()
         if mode == "malformed":
             body = b"not json"
-        elif mode == "html":
+        elif mode in ("html", "html_charset"):
             body = b"<html>Not Found</html>"
         try:
             time.sleep(1.5 if mode == "late_headers" else 0.08)
-            self.send_response(404 if mode == "html" else 200)
+            self.send_response(404 if mode in ("html", "html_charset") else 200)
             self.send_header(
-                "Content-Type", "text/html" if mode == "html" else "application/json"
+                "Content-Type",
+                {"html": "text/html", "html_charset": "text/html; charset=utf-8"}.get(
+                    mode, "application/json"
+                ),
             )
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -215,8 +218,14 @@ def test_disabled_timeout_still_accepts_a_response(timeout):
         ("malformed", None, 1),
         ("html", [None], 0),
         ("html", None, 1),
+        ("html_charset", [None], 0),
+        ("html_charset", None, 1),
+        ("malformed", [None], 0),
     ],
-    ids=["normal", "device-error", "invalid-json", "getState-404", "switches-404"],
+    ids=[
+        "normal", "device-error", "invalid-json", "getState-404", "switches-404",
+        "getState-html-charset", "switches-html-charset", "getState-non-json",
+    ],
 )
 def test_existing_response_classification_is_preserved(mode, commands, fallbacks):
     with _server(mode) as server:

@@ -475,6 +475,16 @@ class XButtonLocalKey(XButtonBase):
             XButtonBase.set_state(self, payload)
 
 
+class XMiniR4Key(XButtonBase):
+    params = {"key"}
+    uid = "action"
+
+    def set_state(self, params: dict):
+        # Related https://github.com/AlexxIT/SonoffLAN/issues/1880
+        if len(params) == 1:
+            XButtonBase.set_state(self, params)
+
+
 class XT5Action(XEventSesor):
     params = {"slide"}
     uid = "action"

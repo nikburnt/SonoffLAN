@@ -1788,7 +1788,11 @@ def test_minir4():
     action: XButtonKey = next(e for e in entities if e.uid == "action")
     assert action.state == ""
 
-    action.internal_update({"key": 0, "trigTime": "1762678199274"})
+    # I don't know when the event included `trigTime` or at what point it stopped be
+    # there. But judging by user complaints, it isn't there now:
+    # https://github.com/AlexxIT/SonoffLAN/issues/1880
+    # action.internal_update({"key": 0, "trigTime": "1762678199274"})
+    action.internal_update({"key": 0})
     assert action.state == "single"
 
 
